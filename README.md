@@ -14,7 +14,7 @@ Many studies have explored the value in topic modelling methods for the sake of 
 
 # Data 
 
-Data scraped from YouTube using the [Digital Methods Institute's YouTube Tool] (https://wiki.digitalmethods.net/Dmi/ToolYouTubeDataTools) based on the search query "Slime". 
+Data scraped from YouTube using the [Digital Methods Institute's YouTube Tool](https://wiki.digitalmethods.net/Dmi/ToolYouTubeDataTools) based on the search query "Slime". 
 
 # License 
 

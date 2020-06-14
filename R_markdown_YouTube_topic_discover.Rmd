@@ -1,0 +1,903 @@
+---
+title: "Topic discovery using YouTube data"
+author: 'Student ID: 180116144'
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+## PART 1: DATA PREPARATION AND PRELIMINARY EXPLORATION 
+
+#### 1) Import packages and load data 
+
+```{r echo=TRUE}
+
+# Import packages
+library(tm) 
+library(tidytext)
+library(viridis)
+library(tidyverse)
+library(dplyr)
+library(stringr)
+# Plotting 
+library(ggplot2)
+library(wordcloud)
+# Co-occurance
+library(gutenbergr)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(igraph)
+library(ggraph)
+# Machine learning 
+library(topicmodels)
+library(clValid) 
+library(ape)
+library(dplyr)
+library(fpc)
+library(cluster)
+```
+
+```{r}
+# Load full dataset
+data <- read.delim('data/videolist_search364_2019_07_18-09_19_04(slime).tab')
+str(data)
+```
+
+```
+
+#### 2) Subset data to form text dataframe 
+
+```{r}
+### Create text dataframe 
+
+textData <- data[c(4, 7, 8)] 
+
+text_df <- data.frame(text = paste(textData$videoTitle, textData$videoDescription, sep = " ", collapse = NULL),
+                      doc_id = textData$videoId)
+str(text_df)
+```
+
+
+#### 3) Preliminary data cleaning
+
+
+Filter English language content only and remove technical text (URLs, username tags and channel names)
+
+```{r}
+
+# Define function for cleaning text dataframes 
+
+cleanData <- function (data) {
+  data %>%
+    # Remove URLS 
+    mutate(text = str_replace_all(text, "http[^[:space:]]*", "")) %>%
+    mutate(text = str_replace_all(text, "[^[:space:]]*com", "")) %>%
+    # Remove @username tags 
+    mutate(text = str_replace_all(text, "@[^[:space:]]*", "")) %>%
+    # Remove non-alphabetic characters (retaining spaces)
+    mutate(text = str_replace_all(text, "[^[:alpha:], [:space:]]", "")) %>%
+    # Remove (common) channel names 
+    mutate(text = str_replace_all(text, "[^[:space:]].slime.[^[:space:]]", "")) %>%
+    mutate(text = str_replace_all(text, "[^[:space:]]*channel", "")) %>%
+    # Subset only videos which contain common English language phrases 
+    subset(str_detect(text_df$text, pattern = "the | to | of | is | that ") & !(str_detect(text_df$text, pattern="con | la | en | para"))) %>%
+    return()
+}
+
+# Clean text dataframe 
+
+text_df <- cleanData(text_df) 
+str(text_df)
+
+```
+
+<ul>
+<li>__Note: 221 videos remain after subsetting only the (likely) English language videos__</li>
+</ul>
+
+
+
+#### 3) Exploratory data visualisation 
+
+
+#### Figure i: Count of videos by category
+
+```{r, fig.width=10, fig.height=3}
+
+youtube_category_names <- unique(data$videoCategoryLabel) 
+
+par(mfrow=c(2,1))
+
+data %>% 
+  count(videoCategoryLabel) %>%
+  ggplot(aes(videoCategoryLabel, n)) +
+  geom_col(fill="royalblue4") +
+  xlab("video category") +
+  ylab("count") +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  theme(axis.title = element_text(size=20),
+        axis.text = element_text(size=10))
+```
+
+
+#### 4) DATA PREPARATION: TEXT DATA REFINEMENT
+
+Remove common YouTube and social media terminology and non-thematic common words 
+
+```{r}
+# Words to ignore (common YouTube terms, common channel names, social media platforms)
+
+ignoreWords_df <- 
+  (c("slime", "slimes", "watch", "channels", "series", "credits", "see", "watching", "video", "videos", "subscribe", "new", "like", 
+     "instagram", "ig", "facebook", "channel", "dont", "follow", "twitter", "thank", "youtube", "de", "el", "snapchat", "tanyast", 
+     "izabelastress", "troom", "compilation", "special", "check", "follow", "profile", "picture", "tbestsatisfying", "spotify",
+     "ill", "im", "email", "cmt", "daya", "tepslime", "dx", "karina", "sam", "jerlime", "boenatisfyvideos", "fgteev", 
+     "con", "para", "en", "la"
+)) %>%
+  enframe(value="word")
+
+ignoreWords_cond <- 
+  "slime | watch | channels | series | credits | see | watching | video | videos | subscribe | new | like | 
+     instagram | ig | facebook | channel | dont | follow | twitter | thank | youtube | de | el | snapchat | tanyast | 
+     izabelastress | troom | compilation | special | follow | profile | picture | tbestsatisfying | spotify | 
+     ill | im | email | cmt | daya | tepslime | dx | karina | sam | jerlime | boenatisfyvideos | fgteev | con | para | en | la" 
+
+
+# Define function for cleaning Tidy data  
+
+cleanTidy <- function(tidy_data, n) {   # Function for cleaning Tidy data format  
+  ifelse ((n == 1), 
+          return(subset(tidy_data, (!word %in% stop_words$word) & (!word %in% ignoreWords_df$word) & str_length(!word < 11))),
+          return(subset(tidy_data, ((!word1 %in% stop_words$word) & (!word2 %in% stop_words$word) & 
+                          (!word1 %in% ignoreWords_df$word) & (!word2 %in% ignoreWords_df$word) &
+                          str_length(word1 < 11) & str_length(word2 < 11)))))
+  }
+
+
+# Tokenise text dataframe (Tidy format) and apply cleaning function 
+
+textTidy <- text_df %>%
+  unnest_tokens(word, text) %>%
+  cleanTidy(1) 
+
+head(textTidy)
+```
+
+## STAGE 2: TEXTUAL ANALYSIS 
+
+#### 1) Count-based analysis 
+
+#### Figure 1: Top 20 most frequent words in the corpus 
+
+```{r}
+# Count frequency of words accross corpus 
+
+textFreq <- textTidy %>%
+  cleanTidy(1) %>%
+  count(word, sort = TRUE)
+
+textFreq %>%
+  top_n(20, n) %>%
+  ggplot(aes(x = reorder(word, n), y=n)) + 
+  geom_col(fill="#481668") +
+  xlab('word') +
+  ylab('count') +
+  theme(legend.position="none") +
+  coord_flip()
+```
+
+#### Vis: Frequent words by video (for random sample of 5 videos)
+
+```{r}
+
+# Create table of most frequent colour names 
+colours_df <- 
+  c("pink", "blue", "green", "purple", "red", "yellow", "orange", "black", "silver", "gold", "teal", "white", "brown") %>%
+  enframe(value="word")
+
+non_colour <- textFreq %>%
+  filter(!word %in% colours_df$word)
+
+non_colour %>%
+  top_n(20,n) %>%
+  ggplot(aes(x = reorder(word, n), y=n)) +
+  geom_col(fill="#453781") +
+  xlab('word') +
+  ylab('count') +
+  theme(legend.position="none") +
+  coord_flip()
+```
+
+
+#### Vis: Top 5 most frequent words by video (random sample of 5 videos)
+
+```{r}
+video_textFreq <- textTidy %>% 
+  cleanTidy(1) %>%
+  group_by(doc_id) %>% 
+  count(word, sort = TRUE)
+
+four_videos <- sample(video_textFreq$doc_id, 4)
+
+video_textFreq %>%
+  filter(doc_id %in% four_videos) %>%
+  group_by(doc_id) %>%
+  top_n(5, n) %>%
+  ggplot(aes(x = reorder(word, n), y=n, fill=factor(doc_id))) +
+  geom_col() +
+  scale_fill_manual(values=c("#440E57", "#462E7B", "#433E85", "#38588C", "#32648E"), aesthetics = "fill") +
+  xlab('word') +
+  ylab('count') +
+  theme(legend.position="none") +
+  coord_flip() +
+  facet_wrap(~doc_id, ncol = 2, scales = "free_y") + 
+  scale_color_viridis(discrete=FALSE)
+```
+
+#### Vis: Top 2 most frequent words by YouTube category
+
+```{r fig.height=6}
+# Create dataframe for YouTube category data 
+youtubeCategoryData <- data[c(4, 10)] 
+colnames(youtubeCategoryData) <- c("doc_id", "video_category")
+
+youtubeCategories <- textTidy %>% 
+  left_join(youtubeCategoryData, by="doc_id")
+
+category_termFreq <- youtubeCategories %>%
+  group_by(video_category) %>%
+  count(video_category, word, sort=TRUE)
+
+category_termFreq %>%
+  group_by(video_category) %>% 
+  top_n(2, n) %>%
+  ggplot(aes(x=reorder(word,n), y=n, fill=factor(video_category))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~video_category, scales = "free", ncol=2, nrow=6) +
+  scale_fill_manual(values=c("#440E57", "#462E7B", "#462E7B", "#433E85", "#31668E", "#413F86", "#38588C", "#32648E", "#39568C", "#2F6C8E"), aesthetics = "fill") +
+  xlab("word") +
+  ylab("count") +
+  coord_flip()
+```
+
+#### Figure 2: Top 10 words for the main video categories 
+
+```{r}
+category_termFreq %>%
+  subset(video_category == 'Entertainment' | video_category == 'Howto & Style' | video_category == 'People & Blogs') %>%
+  group_by(video_category) %>%
+  top_n(10, n) %>%
+  ggplot(aes(x=reorder(word,n), y=n, fill=factor(video_category))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~video_category, scales = "free", ncol=2, nrow=6) +
+  scale_fill_manual(values=c("#440E57", "#433E85", "#32648E"), aesthetics = "fill") +
+  xlab("word") +
+  ylab("count") +
+  coord_flip()
+```
+
+
+#### 2) Explore using tf-idf as measure 
+
+#### Vis: Top tf-idf words across corpus 
+
+```{r}
+textTFIDF <- textTidy %>%
+  count(doc_id, word, sort=TRUE) %>%
+  bind_tf_idf(word, doc_id, n) %>%
+  arrange(desc(tf_idf))
+
+textTFIDF %>%
+  filter(tf_idf > 0.8) %>%
+  ggplot(aes(x = reorder(word, tf_idf), y=tf_idf)) +
+  geom_col(fill="#433E85") +
+  xlab('word') +
+  ylab('tf-idf') +
+  theme(legend.position="none") +
+  coord_flip()
+```
+
+#### Vis: Top tf-idf words at video category level
+
+```{r}
+categoryTFIDF <- youtubeCategories %>%
+  count(video_category, word, sort=TRUE) %>%
+  bind_tf_idf(word, video_category, n) %>%
+  arrange(desc(tf_idf))
+
+categoryTFIDF %>%
+  top_n(15, tf_idf) %>%
+  ggplot(aes(x = reorder(word, tf_idf), y=tf_idf)) +
+  geom_col(fill="#433E85") +
+  xlab('word') +
+  ylab('tf_idf') +
+  coord_flip()
+```
+
+
+
+#### 3) Word co-occurance
+
+Prepare bigrams
+
+```{r}
+# Create tokenized bi-grams (two word pairings)
+textBigrams_raw <- text_df %>%
+  unnest_tokens(ngram, text, token = "ngrams", n = 2) %>%
+  count(ngram, sort = TRUE) 
+
+textBigrams <- textBigrams_raw %>%
+  separate(ngram, c("word1", "word2"), sep = " ") %>%
+  cleanTidy(2)
+
+head(textBigrams)
+```
+
+
+#### Figure 3: Bigram of top 55 most co-occuring words 
+
+```{r fig.width=8, fig.height=5}
+# Define function for visualising bigrams
+
+visualize_bigrams <- function(bigrams) {
+  set.seed(2016)
+  a <- grid::arrow(type="closed", length=unit(.1, "inches"))
+  
+  bigrams %>%
+    graph_from_data_frame() %>%
+    ggraph(layout="fr") +
+    geom_edge_link(aes(edge_alpha=n), show.legend=FALSE, arrow=a) +
+    geom_node_point(color="#E3CD5B", size=7) +
+    geom_node_text(aes(label=name), vjust=1, hjust=1, size=5) +
+    theme_void()
+}
+
+textBigrams %>%
+  subset((word1 != "ronald") & (word2 != "ronald")) %>%
+  subset(str_length(word1) < 11 & str_length(word2) < 11) %>%
+  top_n(55, n) %>%
+  # filter(word1 %in% frequentWords$word | word2 %in% frequentWords$word) %>%
+  visualize_bigrams()
+```
+
+#### Vis: Top 20 most frequent word pairings 
+
+```{r}
+textBigrams_raw %>%
+  subset((!str_detect(textBigrams_raw$ngram, pattern="slime"))) %>% 
+  top_n(20, n) %>%
+  ggplot(aes(x=reorder(ngram, n), y=n)) +
+  geom_col(fill="#E3CD5B") +
+  xlab('word pairing') +
+  ylab('frequency') +
+  coord_flip()
+```
+
+#### Figure 5: Top 20 most frequent three-word phrases
+
+```{r}
+text_trigrams <- text_df %>%
+  unnest_tokens(ngram, text, token = "ngrams", n = 3)
+
+text_trigrams %>% 
+  subset(!str_detect(text_trigrams$ngram, pattern = "slime")) %>%
+  count(ngram, sort = TRUE) %>%
+  top_n(20, n) %>%
+  ggplot(aes(x=reorder(ngram, n), y=n)) +
+  geom_col(fill="#D2C066") +
+  xlab('phrase') +
+  ylab('frequency') +
+  coord_flip()
+```
+
+
+
+
+## STAGE 3: MACHINE LEARNING
+
+#### 1) Data preparation for machine learning 
+
+```{r}
+# Explore count distribution 
+
+top_freq <- subset(video_textFreq, video_textFreq$n >= 2) # Subset on words which occur at least twice 
+
+top_freq %>% 
+  ggplot(aes(y=n)) +
+  geom_boxplot(fill="#22928C")
+```
+
+Cap distribution at 98th percentile to reduce variance
+
+```{r}
+
+# Replace counts over 98th percentile with 98th percentile value 
+
+top_freq$n[top_freq$n > quantile(video_textFreq$n, probs=c(.98), na.rm = T)] <- quantile(video_textFreq$n, probs=c(.98), na.rm = T)
+
+# Re-check distribution 
+
+top_freq %>% 
+  ggplot(aes(y=n)) +
+  geom_boxplot(fill="#22928C")
+```
+
+Normalise count variable ('n') by video 
+
+```{r}
+# Define normalise function 
+
+normalise <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+# Group by video and normalise within these grouped ranges 
+
+topFreq_prepped <- top_freq %>%
+  group_by(doc_id) %>%
+  mutate(n = normalise(n)) %>%
+  mutate(n = ifelse(is.na(n), 0, n)) %>%
+  ungroup()
+  
+# Check new distribution
+
+topFreq_prepped %>%
+  ggplot(aes(y=n)) +
+  geom_boxplot(fill="#22928C")
+```
+
+Format data into dissimilarity matrix 
+
+```{r echo=TRUE}
+# Cast normalised data to DTM (Document Term Matrix)
+video_DTMnormal <- topFreq_prepped %>%
+  cast_dtm(doc_id, word, n)
+
+# Reduce sparsity of DTM 
+video_DTMSnormal <- removeSparseTerms(video_DTMnormal, 0.8)
+
+# Create dissimilarity matrix 
+docsdissimNorm <- dist(video_DTMnormal, method="euclidean")
+str(docsdissimNorm)
+```
+
+
+#### 2) Pre-validation tests to find optimal clustering conditions
+
+Determine optimal clustering model and input 
+
+```{r}
+# Fit clValid method based on hierarchical and K-means clustering  
+
+clmethods <- c("hierarchical","kmeans")
+internalValidationNorm <- clValid(as.matrix(docsdissimNorm), nClust = 2:10,
+                                  clMethods = clmethods, validation = "internal")
+
+optimalScores(internalValidationNorm)
+```
+
+Plot internal validation results
+
+#### Figure 6: Internal validation results 
+
+```{r}
+
+# Create graphical matrix 
+par(mfrow=c(2,2),mar=c(4,4,3,1))
+par(xpd=TRUE) 
+
+# Plot internal validation results
+plot(internalValidationNorm, legend=FALSE, pch=c(2, 3), main="")
+plot(nClusters(internalValidationNorm), measures(internalValidationNorm,"Dunn")[,,1], type="n",axes=F, xlab="", ylab="", pch=c(2, 3))
+legend("center", clusterMethods(internalValidationNorm), col=1:9, lty=1:9, pch=c(2, 3))
+
+# Reset graphical parameters 
+op <- par(no.readonly=TRUE)
+par(op)
+
+```
+
+
+#### 3) Hierarchical clustering 
+
+Evaluate clustering parameters
+
+```{r fig.height=10}
+
+# Perform hierarchical clustering using three linkage methods 
+
+h_avg <- hclust(docsdissimNorm, method = "average") %>% 
+  as.dendrogram()
+h_comp <- hclust(docsdissimNorm, method = "complete") %>% 
+  as.dendrogram()
+h_sing <- hclust(docsdissimNorm, method = "single") %>% 
+  as.dendrogram()
+```
+
+
+#### Vis: Average linkage dendograms (whole and zoomed on 5 branch point)
+
+```{r fig.heigh=7}
+par(mfrow=c(2,1))
+
+# Define sub-plots for matrix
+
+# Sub-plot for average method results 
+
+# Whole tree 
+plot(h_avg, leaflab = "none", xlab="videos", ylab="tree height",  main="Average linkage dendogram", xlim = c(1, 180))
+abline(h = 2.9, col="#481668", lty=2)
+text(150, 2.45, "5 branches at 2.9", col="#481668", cex = 1)
+
+# Zoomed in on 5 branch point 
+plot(h_avg, xlim = c(1, 35), ylim = c(1.9,3.7), leaflab = "none", xlab="videos", ylab="tree height", main="Zoomed at 5 branches: Average linkage")
+abline(h = 2.9, col="#481668", lty=2)
+text(25, 3.2, "5 branches at 2.9", col="#481668", cex = 1)
+```
+
+#### Vis: Complete linkage dendograms (whole and zoomed on 5 branch point)
+
+```{r}
+
+par(mfrow=c(2,1))
+
+# Sub-plot for complete method results 
+
+# Whole tree 
+plot(h_comp, leaflab = "none", xlab="videos", ylab="tree height", main="Complete linkage dendogram", xlim = c(1, 400))
+abline(h = 3.7, col="#481668", lty=2)
+text(270, 3, "5 branches at 3.7", col="#481668", cex = 1)
+
+# Zoomed in on 5 branch point 
+plot(h_comp, xlim = c(1, 400), ylim = c(2.00,4.3), leaflab = "none", xlab="videos", ylab="tree height", main="Zoomed at 5 branches: Complete linkage")
+abline(h = 3.7, col="#481668", lty=2)
+text(200, 3.3, "5 branches at 3.7", col="#481668", cex = 1)
+```
+
+
+#### Figure 7a: Single linkage dendogram (whole tree)
+
+```{r}
+
+# Whole tree
+plot(h_sing, xlab="videos", ylab="tree height", main="Single linkage dendogram", xlim = c(1, 180), leaflab = "none")
+abline(h = 2.4, col="#481668", lty=2)
+text(150, 2.25, "5 branches at 2.4", col="#481668", cex = 1)
+```
+
+#### Figure 7b: Single linkage dendogram, zoomed in on 5 branch point with leaf and branch points highlighted 
+
+
+```{r}
+# Zoomed in on 5 branch
+plot(h_sing, xlim = c(1, 15), leaflab = "none", xlab="videos", ylab="tree height", main="Zoomed at 5 branches: Single linkage", nodePar = (pch = c(19, 17, col="#27AB82")))
+abline(h = 2.4, col="#481668", lty=2)
+text(12, 2.5, "5 branches at 2.4", col="#481668", cex = 1)
+```
+
+Perform clustering and add results to text dataframe
+
+```{r}
+# Cut the tree into 5 clusters using single 
+h_clust5 <- hclust(docsdissimNorm, method = "single") %>%
+  cutree(k=5)
+
+# Add clusters to text dataframe 
+
+# Turn cluster results into data frame with appropriate column names 
+h_clust5 <- data.frame(h_clust5) 
+h_clust5$doc_id <- rownames(h_clust5) 
+colnames(h_clust5) <- c("h_cluster", "doc_id")
+str(h_clust5)
+
+# Create dataframe to hold text and cluster data 
+text_categories <- left_join(text_df, h_clust5, by='doc_id')
+str(text_categories)
+```
+
+#### Figure 8: Top 10 words within the clusters formed by hierarchical clustering
+
+```{r}
+HCluster_freq <- text_categories %>% 
+  # cleanTidy(1) %>%
+  unnest_tokens(word, text) %>%
+  subset(!(word %in% stop_words$word)) %>%
+  subset(!(word %in% ignoreWords_df$word)) %>%
+  count(h_cluster, word)
+
+HCluster_freq  %>%
+  group_by(h_cluster) %>%
+  top_n(10, n) %>%
+  ggplot(aes(reorder(word, n), n, fill = factor(h_cluster))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ h_cluster, scales = "free") +
+  xlab("word") +
+  ylab("frequency") +
+  coord_flip()
+```
+
+
+#### 4) K-means clustering 
+
+
+#### Vis: Exploration of clustering with different values for K (between 2 and 9)
+
+```{r}
+
+# Define for plotting K for a given range 
+
+plotK <- function(begin, finish) {
+  par(op)
+  par(mfrow=c(2,2))
+  for (i in begin:finish) {
+    title <- paste0("Clusters when k=", toString(i))
+    kfit <- kmeans(docsdissimNorm, i)
+    clusplot(as.matrix(docsdissimNorm), kfit$cluster, color=T, shade=T, lines=0, main=title)
+  }
+  par(op)
+}
+
+
+# Plot clustering with K between 2 and 5 
+
+plotK(3, 6)
+```
+
+
+#### Vis: Exploration of clustering using K = 5 using different (random) centroids 
+
+```{r fig.height=5}
+par(op)
+par(mfrow=c(2,2))
+
+for (i in 1:4) {
+  kfit5 <- kmeans(docsdissimNorm, 5)
+  clusplot(as.matrix(docsdissimNorm), kfit5$cluster, color=T, shade=T, lines=0, main="k=5") 
+} 
+
+par(op)
+```
+
+#### Figure 10: Final k means clustering with k=5 
+
+```{r}
+par(mfrow=c(1,1))
+kfit5 <- kmeans(docsdissimNorm, 5)
+clusplot(as.matrix(docsdissimNorm), kfit5$cluster, color=T, shade=T, lines=0, main="k=5") 
+```
+
+Perform clustering and add results to text dataframe
+
+```{r}
+
+Kclusters_5 <- as.data.frame(kfit5$cluster)
+Kclusters_5$doc_id <- rownames(Kclusters_5) 
+colnames(Kclusters_5) <- c("k_cluster", "doc_id")
+str(Kclusters_5)
+text_categories <- left_join(text_categories, Kclusters_5, by="doc_id")
+str(text_categories)
+```
+
+#### Figure 11: Top 10 words within clusters formed by K-means clustering
+
+```{r}
+ 
+# Transform to Tidy format  
+kCluster_freq <- text_categories %>% 
+  unnest_tokens(word, text) %>%
+  cleanTidy(1) %>%
+  count(k_cluster, word)
+
+# Plot frequent terms 
+kCluster_freq  %>%
+  group_by(k_cluster) %>%
+  top_n(10, n) %>%
+  ggplot(aes(reorder(word, n), n, fill = factor(k_cluster))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ k_cluster, scales = "free") +
+  xlab("word") +
+  ylab("frequency") +
+  coord_flip()
+```
+
+
+
+## STAGE 4: TOPIC MODELING 
+
+#### 1) Data preparation 
+
+```{r}
+# Cast tidy dataframe to DTM 
+
+video_DTM <- video_textFreq %>%
+  cleanTidy(1) %>%
+  cast_dtm(doc_id, word, n)
+
+# Remove documents with no repeated words 
+raw.sum <- apply(video_DTM, 1,FUN=sum)
+topic_DTM <- video_DTM[raw.sum!=0,]
+str(topic_DTM)
+```
+
+#### 2) Fit LDA topic model with different k values (between 3 and 5)
+
+```{r}
+
+# Function for fitting topic model and plotting top n words 
+
+plotTopics <- function (data, topic_n, term_n) {
+  topics <- lda <- LDA(data, k = topic_n, control = list(seed = 1234))
+  
+  video_topics <- tidy(topics, matrix = "beta")
+  
+  video_topics %>%
+    group_by(topic) %>%
+    top_n(term_n, beta) %>%
+    ggplot(aes(reorder(term, beta), beta, fill = factor(topic))) +
+    geom_col(show.legend = FALSE) +
+    facet_wrap(~ topic, scales = "free") +
+    xlab("word") +
+    ylab("probability (beta)") +
+    coord_flip()
+}
+```
+
+
+#### 3) Fit and plot LDA with different topic numbers ranging from 3-7
+
+
+#### Vis: Top 10 words within three topics produced using LDA topic modeling 
+
+```{r fig.width=7, fig.height=2}
+topic_DTM %>% plotTopics(3, 10)
+```
+
+#### Vis: Top 10 words within four topics produced using LDA topic modeling 
+
+```{r}
+topic_DTM %>% plotTopics(4, 10)
+```
+
+#### Vis: Top 10 words within five topics produced using LDA topic modeling 
+
+```{r}
+topic_DTM %>% plotTopics(5, 10)
+```
+
+#### Figure 12: Top 10 words within six topics produced using LDA topic modeling 
+
+```{r}
+topic_DTM %>% plotTopics(6, 10)
+```
+
+#### Vis: Top 10 words within six topics produced using LDA topic modeling 
+
+```{r}
+topic_DTM %>% plotTopics(7, 10)
+```
+
+
+3) Fit LDA model using 5 models 
+
+```{r}
+# Perform topic analysis based on 5 topics 
+topics <- lda <- LDA(topic_DTM, 6, control = list(seed = 1234))
+# Tidy
+video_topics <- tidy(topics, matrix = "beta")
+```
+
+
+#### Vis: Difference between topic 1 and 4 (log ratio)
+
+```{r fig.width=9}
+library(tidyr)
+beta_diff <- video_topics %>%
+  subset(topic == 1 | topic == 4) %>%
+  mutate(topic = paste0("topic", topic)) %>%
+  spread(topic, beta) %>%
+  filter(topic1 > 0.007 | topic4 > 0.007) %>%
+  mutate(log_ratio = log2(topic1 / topic4))
+
+beta_diff %>%
+  ggplot(aes(reorder(term, log_ratio), log_ratio, fill=(log_ratio))) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_viridis(option="cividis") +
+  xlab("term") +
+  ylab("log ratio topic1/topic4") +
+  coord_flip()
+```
+
+#### Figure 13: Log ratio between topics 5 and 6
+
+```{r}
+library(tidyr)
+beta_diff <- video_topics %>%
+  subset(topic == 5 | topic == 6) %>%
+  mutate(topic = paste0("topic", topic)) %>%
+  spread(topic, beta) %>%
+  filter(topic5 > 0.007 | topic6 > 0.007) %>%
+  mutate(log_ratio = log2(topic6 / topic5))
+
+beta_diff %>%
+  ggplot(aes(reorder(term, log_ratio), log_ratio, fill=(log_ratio))) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_viridis(option="cividis") +
+  xlab("term") +
+  ylab("log ratio") +
+  coord_flip()
+```
+
+
+
+#### STAGE 4: SCOPING NEXT STEPS: ENGAGEMENT  
+
+# Data preparation 
+
+Create dataframe for engagement variables
+
+```{r}
+# Target views data
+views_df <- data[c("videoId", "videoCategoryLabel", "viewCount", "likeCount", "commentCount", "dislikeCount")]
+views_df$doc_id <- views_df$videoId
+
+# Replace NAs with mean 
+views_df[which(is.na(views_df$viewCount)), "viewCount"] <- mean(views_df$viewCount)
+
+# Explore distribution
+views_df %>%
+  ggplot(aes(y= viewCount)) +
+  geom_boxplot() 
+```
+
+Cap distribution at 95hth percentile to reduce variance
+
+```{r}
+# Find 95th quantile
+qnt <- quantile(views_df$viewCount, probs=c(.95), na.rm = T)
+
+# Cap values above 95th quantile with 95th quantile value
+views_df$viewCount[views_df$viewCount > qnt] <- qnt
+
+# Rexplore distribution
+views_df %>%
+  ggplot(aes(y= viewCount)) +
+  geom_boxplot() 
+```
+
+Join with word frequency data 
+
+```{r}
+words_views <- left_join(video_textFreq, views_df, by='doc_id')
+head(words_views)
+```
+
+#### Vis: Frequency of key words and view count
+
+```{r}
+words_views %>%
+  subset(word =='makeup' | word=='challenge'  | word=='mixing'  | word== 'satisfying' | word == 'asmr' | word == 'diy') %>%
+  ggplot(aes(n, viewCount, color=word, size=likeCount)) +
+  scale_color_viridis(option="cividis", discrete=TRUE) +
+  geom_jitter()
+```
+
+
+#### Vis: video view count distribution by video category 
+
+```{r fig.width=14, fig.height=3}
+
+# Plot distribution within 1st-98th quantiles
+
+data %>% 
+  subset(viewCount < quantile(viewCount, probs=c(.97), na.rm = T)) %>% 
+  ggplot(aes(videoCategoryLabel, viewCount)) +
+  geom_boxplot(fill="royalblue4") +
+  xlab("video category") +
+  ylab("video views") + 
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  theme(axis.title = element_text(size=20),
+        axis.text = element_text(size=15),
+        legend.position="none")
+```
